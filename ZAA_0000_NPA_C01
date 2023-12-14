@@ -1,0 +1,317 @@
+CLASS lcl_sel DEFINITION.
+
+  PUBLIC SECTION.
+
+    TYPES:
+      mts_data TYPE zs0000_npa_data,
+      mtt_data TYPE STANDARD TABLE OF zs0000_npa_data.
+
+    DATA:
+      mt_data  TYPE mtt_data.
+
+    METHODS:
+      export_csv
+        IMPORTING
+          iv_layo          TYPE slis_vari
+        CHANGING
+          cv_folder        TYPE string
+        RETURNING
+          VALUE(rv_result) TYPE as4flag.
+
+  PROTECTED SECTION.
+
+  PRIVATE SECTION.
+
+    METHODS:
+      export_csv_data_variant_set
+        IMPORTING
+          iv_layo          TYPE slis_vari
+        EXPORTING
+          et_data          TYPE mtt_data
+          et_fcat          TYPE lvc_t_fcat
+        RAISING
+          zcx_0000_static_check.
+
+    METHODS:
+      convert_date
+        IMPORTING
+          iv_date          TYPE dats
+        RETURNING
+          VALUE(rv_date)   TYPE char10,
+      convert_sum
+        IMPORTING
+          iv_sum           TYPE any
+        RETURNING
+          VALUE(rv_result) TYPE string.
+
+ENDCLASS.     "lcl_sel
+
+CLASS lcl_sel IMPLEMENTATION.
+
+  METHOD export_csv.
+
+    TYPES: tt_csv         TYPE STANDARD TABLE OF string.
+
+    CONSTANTS: lc_separator     TYPE char01 VALUE ';'.
+    CONSTANTS: lc_fileextension TYPE string VALUE 'SAPUVHD_NPA.csv'.
+
+    DATA: lv_filename     TYPE string.
+    DATA: lt_data_variant TYPE mtt_data
+        , lt_fcat_variant TYPE lvc_t_fcat.
+    DATA: lv_string       TYPE string.
+    DATA: lt_csv          TYPE tt_csv
+        , ls_csv          LIKE LINE OF lt_csv.
+    DATA: lv_index        TYPE int4.
+
+
+    IF mt_data[] IS INITIAL.
+      RETURN.
+    ENDIF.
+
+    TRY.
+        export_csv_data_variant_set(
+          EXPORTING
+            iv_layo = iv_layo
+          IMPORTING
+            et_data = lt_data_variant
+            et_fcat = lt_fcat_variant
+        ).
+
+        SORT lt_fcat_variant BY col_pos.
+      CATCH zcx_0000_static_check INTO DATA(lo_exc).
+        MESSAGE lo_exc TYPE 'I'.
+        RETURN.
+    ENDTRY.
+
+    LOOP AT lt_data_variant ASSIGNING FIELD-SYMBOL(<ls_data_variant>).
+      CLEAR: lv_index
+           , ls_csv.
+
+      LOOP AT lt_fcat_variant ASSIGNING FIELD-SYMBOL(<ls_fcat_variant>)
+        WHERE no_out IS INITIAL
+          AND tech   IS INITIAL.
+        lv_index = lv_index + 1.
+
+        ASSIGN COMPONENT <ls_fcat_variant>-fieldname OF STRUCTURE <ls_data_variant>
+          TO FIELD-SYMBOL(<lv_value>).
+        IF sy-subrc = 0.
+          CASE <ls_fcat_variant>-inttype.
+            WHEN 'D'.
+              lv_string = zcl_0000_file_upload=>convert_date( <lv_value> ).
+            WHEN 'P'.
+              lv_string = zcl_0000_file_upload=>convert_sum( <lv_value> ).
+            WHEN 'h'.
+              CONTINUE.
+            WHEN OTHERS.
+              lv_string = <lv_value>.
+          ENDCASE.
+
+          IF lv_index = 1.
+            ls_csv = lv_string.
+          ELSE.
+            ls_csv = ls_csv && lc_separator && lv_string.
+          ENDIF.
+        ENDIF.
+      ENDLOOP.
+
+      APPEND ls_csv TO lt_csv.
+    ENDLOOP.
+
+
+    lv_filename = sy-datum && '_' && sy-uzeit && '_' && lc_fileextension.
+    IF cv_folder IS INITIAL.
+      cl_gui_frontend_services=>get_temp_directory(
+        CHANGING
+          temp_dir             = cv_folder
+        EXCEPTIONS
+          cntl_error           = 1
+          error_no_gui         = 2
+          not_supported_by_gui = 3
+          OTHERS               = 4
+      ).
+    ENDIF.
+    lv_filename = cv_folder && '\' && lv_filename.
+
+    cl_gui_frontend_services=>gui_download(
+      EXPORTING
+        filename                  = lv_filename
+        codepage                  = '1504'
+      CHANGING
+        data_tab                  = lt_csv
+      EXCEPTIONS
+        file_write_error          = 1
+        no_batch                  = 2
+        gui_refuse_filetransfer   = 3
+        invalid_type              = 4
+        no_authority              = 5
+        unknown_error             = 6
+        header_not_allowed        = 7
+        separator_not_allowed     = 8
+        filesize_not_allowed      = 9
+        header_too_long           = 10
+        dp_error_create           = 11
+        dp_error_send             = 12
+        dp_error_write            = 13
+        unknown_dp_error          = 14
+        access_denied             = 15
+        dp_out_of_memory          = 16
+        disk_full                 = 17
+        dp_timeout                = 18
+        file_not_found            = 19
+        dataprovider_exception    = 20
+        control_flush_error       = 21
+        not_supported_by_gui      = 22
+        error_no_gui              = 23
+        OTHERS                    = 24
+    ).
+    IF sy-subrc <> 0.
+      MESSAGE ID sy-msgid TYPE sy-msgty NUMBER sy-msgno
+        WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+    ELSE.
+      cl_gui_frontend_services=>execute(
+        EXPORTING
+          document               = lv_filename
+        EXCEPTIONS
+          cntl_error             = 1
+          error_no_gui           = 2
+          bad_parameter          = 3
+          file_not_found         = 4
+          path_not_found         = 5
+          file_extension_unknown = 6
+          error_execute_failed   = 7
+          synchronous_failed     = 8
+          not_supported_by_gui   = 9
+          OTHERS                 = 10
+      ).
+      IF sy-subrc <> 0.
+        MESSAGE ID sy-msgid TYPE sy-msgty NUMBER sy-msgno
+          WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+      ENDIF.
+    ENDIF.
+
+    rv_result = abap_true.
+
+  ENDMETHOD.
+
+  METHOD export_csv_data_variant_set.
+
+    DATA: ls_variant             TYPE disvariant.
+    DATA: lt_sort                TYPE lvc_t_sort
+        , lt_filter              TYPE lvc_t_filt
+        , ls_layout              TYPE lvc_s_layo.
+    DATA: lt_filter_index        TYPE lvc_t_fidx
+        , lt_grouplevels_filter  TYPE lvc_t_grpl
+        , lt_filter_index_inside TYPE lvc_t_fidx.
+
+
+    CALL FUNCTION 'LVC_FIELDCATALOG_MERGE'
+      EXPORTING
+        i_structure_name            = 'ZS0000_NPA_DATA'
+        i_bypassing_buffer          = 'X'
+      CHANGING
+        ct_fieldcat                 = et_fcat
+     EXCEPTIONS
+       inconsistent_interface       = 1
+       program_error                = 2
+       OTHERS                       = 3.
+    IF sy-subrc <> 0.
+*      RAISE EXCEPTION TYPE zcx_0000_static_check
+*        MESSAGE e007.
+    ENDIF.
+
+    IF iv_layo IS NOT INITIAL.
+      ls_variant-report  = sy-cprog.
+      ls_variant-variant = iv_layo.
+
+      CALL FUNCTION 'LVC_VARIANT_SELECT'
+        EXPORTING
+          i_dialog                  = ''
+          it_default_fieldcat       = et_fcat
+        IMPORTING
+          et_fieldcat               = et_fcat
+          et_sort                   = lt_sort
+          et_filter                 = lt_filter
+          es_layout                 = ls_layout
+        TABLES
+          it_data                   = mt_data[]
+        CHANGING
+          cs_variant                = ls_variant
+        EXCEPTIONS
+          wrong_input               = 1
+          fc_not_complete           = 2
+          not_found                 = 3
+          program_error             = 4
+          data_missing              = 5
+          OTHERS                    = 6.
+      IF sy-subrc <> 0.
+*        RAISE EXCEPTION TYPE zcx_0000_static_check
+*          MESSAGE e007.
+      ENDIF.
+    ENDIF.
+
+    IF lt_filter[] IS NOT INITIAL.
+      CALL FUNCTION 'LVC_FILTER_APPLY'
+        EXPORTING
+          it_filter                    = lt_filter
+          it_fieldcatalog              = et_fcat
+        IMPORTING
+          et_filter_index              = lt_filter_index
+          et_grouplevels_filter        = lt_grouplevels_filter
+          et_filter_index_inside       = lt_filter_index_inside
+        TABLES
+          it_data                      = mt_data[].
+
+      LOOP AT mt_data ASSIGNING FIELD-SYMBOL(<ls_data>).
+        READ TABLE lt_filter_index_inside TRANSPORTING NO FIELDS
+          WITH TABLE KEY table_line = sy-tabix.
+        IF sy-subrc = 0.
+          APPEND <ls_data> TO et_data.
+        ENDIF.
+      ENDLOOP.
+    ELSE.
+      et_data[] = mt_data[].
+    ENDIF.
+
+    IF lt_sort[] IS NOT INITIAL.
+      CALL FUNCTION 'LVC_SORT_APPLY'
+        EXPORTING
+          it_sort           = lt_sort
+          it_fieldcat       = et_fcat
+        TABLES
+          ct_data           = et_data[].
+    ENDIF.
+
+  ENDMETHOD.
+
+  METHOD convert_date.
+
+    IF iv_date IS INITIAL.
+      CLEAR rv_date.
+    ELSE.
+      TRY.
+          CALL METHOD cl_abap_datfm=>conv_date_int_to_ext
+            EXPORTING
+              im_datint   = iv_date
+              im_datfmdes = '6' "YYYY-MM-DD
+            IMPORTING
+              ex_datext   = rv_date.
+        CATCH cx_abap_datfm_format_unknown INTO DATA(lx_format).  "Check ATC
+          CLEAR rv_date.
+      ENDTRY.
+    ENDIF.
+
+  ENDMETHOD.
+
+  METHOD convert_sum.
+
+    CHECK iv_sum IS NOT INITIAL.
+    rv_result = iv_sum.
+    IF iv_sum < 0.
+      CALL FUNCTION 'CLOI_PUT_SIGN_IN_FRONT'
+        CHANGING
+          value = rv_result.
+    ENDIF."< 0
+
+  ENDMETHOD.
+
+ENDCLASS.     "lcl_sel
